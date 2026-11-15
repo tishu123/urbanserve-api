@@ -18,7 +18,7 @@ Requires JDK 17+ and Maven 3.9+.
 |---|---|---|
 | GET | /api/categories, /api/providers?categoryId=&city= | public |
 | POST | /api/auth/otp/request, /api/auth/otp/verify | public |
-| GET | /api/auth/me | token |
+| GET | /api/auth/me  (server confirmation: phone, loggedIn, otpVerified, verifiedVia, loggedInAt, expiresAt) | token |
 | POST | /api/bookings  (phone taken from token) | token |
 | GET | /api/bookings  (own bookings; admin may add ?phone=) | token |
 | GET | /api/bookings/{id}  (own only, admin any) | token |
@@ -58,6 +58,9 @@ Rate limits, the 5-attempt limit and JWT issuing still run in this app.
 
 The resend timer shown to the user is the larger of `app.otp.resend-cooldown` and VerifyNow's own
 timeout (usually 60 s). Provider outages return 502/503 without using up one of the user's attempts.
+
+Every JWT carries `otp_verified: true` (and `verified_via`), set only by a successful OTP check.
+The API rejects any token without it (401), and logs `OTP verified via ...: phone ******1234 is now logged in`.
 
 OTP rules: 6 digits, valid 5 min, 5 wrong attempts max, 30 s resend cooldown, 5 codes/hour per phone.
 Codes are stored only as an HMAC.

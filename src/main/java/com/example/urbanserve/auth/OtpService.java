@@ -3,6 +3,8 @@ package com.example.urbanserve.auth;
 import com.example.urbanserve.model.OtpChallenge;
 import com.example.urbanserve.repo.OtpChallengeRepository;
 import org.springframework.beans.factory.ObjectProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -27,9 +29,15 @@ import java.util.regex.Pattern;
 @Service
 public class OtpService {
 
+    private static final Logger log = LoggerFactory.getLogger(OtpService.class);
     public static final Pattern PHONE = Pattern.compile("^[6-9]\\d{9}$");
 
-    public record TokenResponse(String token, Instant expiresAt, String phone, List<String> roles) {}
+    /** JWT claims proving the token was issued after a successful OTP check (enforced in JwtConfig). */
+    public static final String CLAIM_OTP_VERIFIED = "otp_verified";
+    public static final String CLAIM_VERIFIED_VIA = "verified_via";
+
+    public record TokenResponse(String token, Instant expiresAt, String phone, List<String> roles,
+                                boolean otpVerified, String verifiedVia, Instant loggedInAt) {}
 
     private final OtpChallengeRepository challenges;
     private final OtpSender sender;          // app generates the code (log, sns)
@@ -45,6 +53,7 @@ public class OtpService {
     private final Duration jwtTtl;
     private final String issuer;
     private final Set<String> adminPhones;
+    private final String senderName;
 
     public OtpService(OtpChallengeRepository challenges,
                       ObjectProvider<OtpSender> senders, ObjectProvider<ManagedOtpProvider> managedProviders,
@@ -55,7 +64,8 @@ public class OtpService {
                       @Value("${app.otp.max-per-hour:5}") int maxPerHour,
                       @Value("${app.jwt.ttl:24h}") Duration jwtTtl,
                       @Value("${app.jwt.issuer:urbanserve}") String issuer,
-                      @Value("${app.admin-phones:}") String adminPhones) {
+                      @Value("${app.admin-phones:}") String adminPhones,
+                      @Value("${app.otp.sender:log}") String senderName) {
         this.challenges = challenges;
         this.sender = senders.getIfUnique();
         this.managed = managedProviders.getIfUnique();
@@ -70,6 +80,7 @@ public class OtpService {
         this.maxPerHour = maxPerHour;
         this.jwtTtl = jwtTtl;
         this.issuer = issuer;
+        this.senderName = senderName.trim().toLowerCase();
         this.adminPhones = new HashSet<>();
         for (String p : adminPhones.split(",")) if (!p.isBlank()) this.adminPhones.add(p.trim());
     }
@@ -152,6 +163,7 @@ public class OtpService {
                     left > 0 ? "Incorrect code. " + left + " attempt(s) left." : "Too many attempts. Request a new code.");
         }
         c.consume();
+        log.info("OTP verified via {}: phone ******{} is now logged in", senderName, phone.substring(phone.length() - 4));
         return issueToken(phone);
     }
 
@@ -165,10 +177,12 @@ public class OtpService {
                 .issuedAt(now)
                 .expiresAt(exp)
                 .claim("roles", roles)
+                .claim(CLAIM_OTP_VERIFIED, true)
+                .claim(CLAIM_VERIFIED_VIA, senderName)
                 .build();
         JwsHeader header = JwsHeader.with(MacAlgorithm.HS256).build();
         String token = jwtEncoder.encode(JwtEncoderParameters.from(header, claims)).getTokenValue();
-        return new TokenResponse(token, exp, phone, roles);
+        return new TokenResponse(token, exp, phone, roles, true, senderName, now);
     }
 
     /** Housekeeping: drop OTP rows older than a day. */
