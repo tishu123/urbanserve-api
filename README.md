@@ -19,13 +19,13 @@ Requires JDK 17+ and Maven 3.9+.
 | GET | /api/categories, /api/providers?categoryId=&city= | public |
 | POST | /api/auth/otp/request, /api/auth/otp/verify | public |
 | GET | /api/auth/me  (server confirmation: phone, loggedIn, otpVerified, verifiedVia, loggedInAt, expiresAt) | token |
-| POST | /api/bookings  (phone taken from token) | token |
+| POST | /api/bookings  (phone taken from token; starts PENDING until dispatch assigns a pro) | token |
 | GET | /api/bookings  (own bookings; admin may add ?phone=) | token |
 | GET | /api/bookings/{id}  (own only, admin any) | token |
 | PATCH | /api/bookings/{id}/status?status=CANCELLED  (customers: cancel own pending/confirmed; admin: any status) | token |
 
     curl -X POST localhost:8080/api/bookings -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{
-      "customerName":"Asha","address":"12 MG Road","scheduledAt":"2027-01-15T10:00:00","categoryId":1}'
+      "customerName":"Asha","address":"12 MG Road","city":"Bengaluru","scheduledAt":"2027-01-15T10:00:00","categoryId":1}'
     curl localhost:8080/api/bookings -H "Authorization: Bearer $TOKEN"
 
 ## Configuration (env vars)
@@ -64,6 +64,34 @@ The API rejects any token without it (401), and logs `OTP verified via ...: phon
 
 OTP rules: 6 digits, valid 5 min, 5 wrong attempts max, 30 s resend cooldown, 5 codes/hour per phone.
 Codes are stored only as an HMAC.
+
+## Dispatch: assigning a professional
+Bookings are matched to a free professional by **urbanserve-dispatch** (it owns the pros' shifts
+and schedules). The two services talk only through **Amazon SQS** queues (ElasticMQ on your Mac):
+
+```
+POST /api/bookings ──▶ booking PENDING + outbox row (1 transaction)
+OutboxRelay ─────────▶ booking-requested ──▶ dispatch: find free pro, reserve the slot
+AssignmentHandler ◀── booking-assignment ◀── ASSIGNED {pro, arrival window} | NO_PROVIDER {reason}
+   PENDING -> CONFIRMED (pro + arrival window)  or  CANCELLED (statusReason = why)
+cancel ──────────────▶ booking-cancelled ──▶ dispatch frees the slot
+```
+
+- **No lost messages:** the message is saved with the booking and sent afterwards, retried until SQS accepts it.
+- **Duplicates are harmless:** replies only change PENDING bookings; dispatch answers repeats the same way.
+- **Cancel during matching:** if dispatch assigns after the customer cancelled, the slot is released again.
+- Booking JSON adds `city`, `assignedProvider {id,name,phone,rating}`, `arrivalWindowStart/End`,
+  `statusReason`, `preferredProviderId`.
+
+**Run locally with dispatch:** start `urbanserve-infra/compose` (`docker compose up -d --build`: ElasticMQ,
+PostgreSQL and dispatch), then uncomment the dispatch lines in `.env` and restart this app.
+Without them (`APP_DISPATCH_TRANSPORT=none`, the default) bookings stay PENDING.
+
+| Variable | Purpose |
+|---|---|
+| APP_DISPATCH_TRANSPORT | `none` (default) or `sqs` |
+| APP_SQS_BOOKING_REQUESTED_URL / _CANCELLED_URL / _ASSIGNMENT_URL | Queue URLs (Terraform outputs on AWS) |
+| APP_SQS_ENDPOINT | Local only: ElasticMQ, `http://localhost:9324` |
 
 ## Database
 Schema is managed by Flyway (`src/main/resources/db/migration`). Add changes as new files

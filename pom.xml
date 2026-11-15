@@ -40,6 +40,8 @@
 
     <!-- SMS delivery via Amazon SNS (only used when app.otp.sender=sns) -->
     <dependency><groupId>software.amazon.awssdk</groupId><artifactId>sns</artifactId></dependency>
+    <!-- Booking <-> dispatch messages via Amazon SQS (only used when app.dispatch.transport=sqs) -->
+    <dependency><groupId>software.amazon.awssdk</groupId><artifactId>sqs</artifactId></dependency>
 
     <!-- Database: H2 for local dev, PostgreSQL in prod; schema owned by Flyway -->
     <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-core</artifactId></dependency>
