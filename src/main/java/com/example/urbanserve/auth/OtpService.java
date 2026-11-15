@@ -2,6 +2,7 @@ package com.example.urbanserve.auth;
 
 import com.example.urbanserve.model.OtpChallenge;
 import com.example.urbanserve.repo.OtpChallengeRepository;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -31,7 +32,8 @@ public class OtpService {
     public record TokenResponse(String token, Instant expiresAt, String phone, List<String> roles) {}
 
     private final OtpChallengeRepository challenges;
-    private final OtpSender sender;
+    private final OtpSender sender;          // app generates the code (log, sns)
+    private final ManagedOtpProvider managed; // provider generates and checks the code (messagecentral)
     private final JwtEncoder jwtEncoder;
     private final SecretKey key;
     private final SecureRandom random = new SecureRandom();
@@ -44,7 +46,9 @@ public class OtpService {
     private final String issuer;
     private final Set<String> adminPhones;
 
-    public OtpService(OtpChallengeRepository challenges, OtpSender sender, JwtEncoder jwtEncoder, SecretKey key,
+    public OtpService(OtpChallengeRepository challenges,
+                      ObjectProvider<OtpSender> senders, ObjectProvider<ManagedOtpProvider> managedProviders,
+                      JwtEncoder jwtEncoder, SecretKey key,
                       @Value("${app.otp.ttl:5m}") Duration otpTtl,
                       @Value("${app.otp.max-attempts:5}") int maxAttempts,
                       @Value("${app.otp.resend-cooldown:30s}") Duration resendCooldown,
@@ -53,7 +57,11 @@ public class OtpService {
                       @Value("${app.jwt.issuer:urbanserve}") String issuer,
                       @Value("${app.admin-phones:}") String adminPhones) {
         this.challenges = challenges;
-        this.sender = sender;
+        this.sender = senders.getIfUnique();
+        this.managed = managedProviders.getIfUnique();
+        if ((sender == null) == (managed == null)) {
+            throw new IllegalStateException("Exactly one OTP sender must be active: set app.otp.sender to log, sns or messagecentral");
+        }
         this.jwtEncoder = jwtEncoder;
         this.key = key;
         this.otpTtl = otpTtl;
@@ -87,6 +95,11 @@ public class OtpService {
         }
 
         challenges.consumeAllForPhone(phone); // only the newest code is valid
+        if (managed != null) {
+            ManagedOtpProvider.Started started = managed.start(phone);
+            challenges.save(OtpChallenge.managed(phone, started.reference(), now, now.plus(otpTtl)));
+            return Math.max(resendCooldown.toSeconds(), started.resendAfterSeconds());
+        }
         String code = String.format("%06d", random.nextInt(1_000_000));
         challenges.save(new OtpChallenge(phone, hash(phone, code), now, now.plus(otpTtl)));
         sender.send(phone, code);
@@ -108,10 +121,30 @@ public class OtpService {
             c.consume();
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Code expired. Request a new one.");
         }
-        c.incrementAttempts();
-        boolean ok = MessageDigest.isEqual(
-                c.getCodeHash().getBytes(StandardCharsets.US_ASCII),
-                hash(phone, code).getBytes(StandardCharsets.US_ASCII));
+        boolean ok;
+        if (c.getProviderRef() != null) {
+            if (managed == null) { // sender switched away from the provider after this code was sent
+                c.consume();
+                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Code expired. Request a new one.");
+            }
+            // Provider outages throw here, before the attempt is counted.
+            ManagedOtpProvider.Result result = managed.check(c.getProviderRef(), phone, code);
+            c.incrementAttempts();
+            if (result == ManagedOtpProvider.Result.EXPIRED) {
+                c.consume();
+                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Code expired. Request a new one.");
+            }
+            ok = result == ManagedOtpProvider.Result.VALID;
+        } else {
+            if (c.getCodeHash() == null) {
+                c.consume();
+                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Code expired. Request a new one.");
+            }
+            c.incrementAttempts();
+            ok = MessageDigest.isEqual(
+                    c.getCodeHash().getBytes(StandardCharsets.US_ASCII),
+                    hash(phone, code).getBytes(StandardCharsets.US_ASCII));
+        }
         if (!ok) {
             int left = maxAttempts - c.getAttempts();
             if (left <= 0) c.consume();
