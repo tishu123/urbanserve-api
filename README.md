@@ -35,13 +35,18 @@ Requires JDK 17+ and Maven 3.9+.
 | APP_ADMIN_PHONES | Comma-separated phones that get the ADMIN role. |
 | APP_OTP_SENDER | `log` (dev, default), `sns` (SMS via Amazon SNS; default in prod profile) or `messagecentral` (Message Central VerifyNow). |
 | APP_OTP_SNS_SENDER_ID / _ENTITY_ID / _TEMPLATE_ID | SNS sender ID and India DLT IDs. |
-| APP_OTP_MC_CUSTOMER_ID | Message Central customer ID (e.g. `C-1A2B3C4D5E6F7890`), from the console. |
-| APP_OTP_MC_KEY | Base64 of your Message Central password: `printf '%s' 'yourPassword' \| base64`. |
+| APP_OTP_MC_CUSTOMER_ID | Message Central customer ID; defaults to `C-DC8D1C144CA446C`. |
+| APP_OTP_MC_PASSWORD | Your Message Central password (plain). Put it in `.env`, never in a committed file. |
+| APP_OTP_MC_KEY | Alternative to the password: Base64 of it (`printf '%s' 'yourPassword' \| base64`). |
 | APP_OTP_MC_AUTH_TOKEN | Optional: an authToken from the console, used instead of APP_OTP_MC_KEY (not auto-refreshed). |
 | APP_OTP_MC_FLOW_TYPE | `SMS` (default) or `WHATSAPP`. |
 | SPRING_PROFILES_ACTIVE=prod | Use PostgreSQL: DB_URL, DB_USERNAME, DB_PASSWORD. |
 
 ## OTP via Message Central VerifyNow (no DLT registration needed)
+Easiest: copy `.env.example` to `.env` in this folder, put your Message Central password in it, and
+start the app from this folder (`java -jar target/urbanserve.jar`). No `export` commands needed.
+`.env` is git-ignored. The customer ID defaults to C-DC8D1C144CA446C.
+
 VerifyNow sends the SMS from Message Central's own DLT-registered sender and template, and checks the
 code itself; the app stores only VerifyNow's verification id (never the code, never sent to the browser).
 Rate limits, the 5-attempt limit and JWT issuing still run in this app.

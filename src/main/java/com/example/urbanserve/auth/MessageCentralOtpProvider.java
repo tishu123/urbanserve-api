@@ -18,6 +18,8 @@ import org.springframework.web.util.UriBuilder;
 
 import java.io.InputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Function;
@@ -60,14 +62,19 @@ public class MessageCentralOtpProvider implements ManagedOtpProvider {
                                      @Value("${app.otp.messagecentral.base-url:https://cpaas.messagecentral.com}") String baseUrl,
                                      @Value("${app.otp.messagecentral.customer-id:}") String customerId,
                                      @Value("${app.otp.messagecentral.key:}") String key,
+                                     @Value("${app.otp.messagecentral.password:}") String password,
                                      @Value("${app.otp.messagecentral.auth-token:}") String authToken,
                                      @Value("${app.otp.messagecentral.flow-type:SMS}") String flowType) {
         if (customerId.isBlank()) {
             throw new IllegalStateException("app.otp.sender=messagecentral needs APP_OTP_MC_CUSTOMER_ID");
         }
+        if (key.isBlank() && !password.isEmpty()) {
+            key = Base64.getEncoder().encodeToString(password.getBytes(StandardCharsets.UTF_8));
+        }
         if (key.isBlank() && authToken.isBlank()) {
             throw new IllegalStateException(
-                    "app.otp.sender=messagecentral needs APP_OTP_MC_KEY (Base64 of your Message Central password) or APP_OTP_MC_AUTH_TOKEN");
+                    "app.otp.sender=messagecentral needs APP_OTP_MC_PASSWORD (your Message Central password), "
+                    + "APP_OTP_MC_KEY (Base64 of it) or APP_OTP_MC_AUTH_TOKEN, e.g. in a .env file");
         }
         String flow = flowType.trim().toUpperCase();
         if (!flow.equals("SMS") && !flow.equals("WHATSAPP")) {
