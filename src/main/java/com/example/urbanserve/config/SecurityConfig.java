@@ -29,7 +29,12 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> {
                 // Explicit ant matchers: avoids Spring Security's "ambiguous servlet" error when the
                 // H2 console servlet is registered alongside the DispatcherServlet.
-                auth.requestMatchers(antMatcher(HttpMethod.GET, "/api/categories"), antMatcher(HttpMethod.GET, "/api/providers")).permitAll();
+                // Rohnit: Public catalogue access for categories, providers and service packages.
+auth.requestMatchers(
+        antMatcher(HttpMethod.GET, "/api/categories"),
+        antMatcher(HttpMethod.GET, "/api/providers"),
+        antMatcher(HttpMethod.GET, "/api/categories/*/packages")
+).permitAll();
                 auth.requestMatchers(antMatcher(HttpMethod.POST, "/api/auth/otp/request"), antMatcher(HttpMethod.POST, "/api/auth/otp/verify")).permitAll();
                 auth.requestMatchers(antMatcher("/error")).permitAll();
                 if (h2Console) auth.requestMatchers(antMatcher("/h2-console/**")).permitAll();
