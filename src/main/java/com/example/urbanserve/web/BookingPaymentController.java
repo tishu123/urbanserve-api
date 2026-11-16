@@ -30,10 +30,7 @@ public class BookingPaymentController {
     public PaymentClient.PaymentDetails registerCashPayment(
             @PathVariable Long bookingId,
             @AuthenticationPrincipal Jwt jwt) {
-        Booking booking = bookings.findById(bookingId)
-                .filter(found -> found.getCustomerPhone().equals(jwt.getSubject()))
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND, "Booking not found"));
+        Booking booking = requireOwnedBooking(bookingId, jwt);
 
         if (booking.getStatus() != BookingStatus.PENDING
                 && booking.getStatus() != BookingStatus.CONFIRMED) {
@@ -42,12 +39,48 @@ public class BookingPaymentController {
                     "Cash payment can only be selected for a pending or confirmed booking");
         }
 
+        return paymentClient.registerCashPayment(booking.getId(), requireSavedTotal(booking));
+    }
+
+    @PostMapping("/{bookingId}/payment/online")
+    public PaymentClient.OnlinePaymentDetails prepareOnlinePayment(
+            @PathVariable Long bookingId,
+            @AuthenticationPrincipal Jwt jwt) {
+        Booking booking = requireOwnedBooking(bookingId, jwt);
+
+        if (booking.getStatus() != BookingStatus.PENDING
+                && booking.getStatus() != BookingStatus.CONFIRMED) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Online payment can only be started for a pending or confirmed booking");
+        }
+
+        long amountPaise = requireSavedTotal(booking);
+        if (amountPaise < 100) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT, "Online payment must be at least 100 paise");
+        }
+
+        return paymentClient.prepareOnlinePayment(booking.getId(), amountPaise);
+    }
+
+    private Booking requireOwnedBooking(Long bookingId, Jwt jwt) {
+        if (jwt == null || jwt.getSubject() == null || jwt.getSubject().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Sign in first");
+        }
+
+        return bookings.findById(bookingId)
+                .filter(booking -> jwt.getSubject().equals(booking.getCustomerPhone()))
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Booking not found"));
+    }
+
+    private long requireSavedTotal(Booking booking) {
         Long amountPaise = booking.getTotalAmountPaise();
         if (amountPaise == null || amountPaise <= 0) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT, "This booking does not have a saved package price");
         }
-
-        return paymentClient.registerCashPayment(booking.getId(), amountPaise);
+        return amountPaise;
     }
 }

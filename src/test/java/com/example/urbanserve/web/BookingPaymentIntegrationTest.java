@@ -22,7 +22,6 @@ import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -43,6 +42,8 @@ class BookingPaymentIntegrationTest {
     private static final String OWNER = "9000000999";
     private static final String OTHER_CUSTOMER = "9000000998";
     private static final String TEST_TOKEN = "booking-payment-integration-test-token-0123456789";
+    private static final String CASH_PATH = "/api/payments";
+    private static final String ONLINE_PATH = "/api/payments/razorpay/order";
     private static final ObjectMapper STUB_JSON = new ObjectMapper();
     private static final List<PaymentCall> CALLS = new CopyOnWriteArrayList<>();
     private static final HttpServer PAYMENT_STUB = startPaymentStub();
@@ -97,7 +98,7 @@ class BookingPaymentIntegrationTest {
                 .andExpect(jsonPath("$.paymentId").value(expectedPaymentId))
                 .andExpect(jsonPath("$.amount").value(471700));
 
-        PaymentCall expectedCall = new PaymentCall(bookingId, 471700L, "COD_CASH");
+        PaymentCall expectedCall = new PaymentCall(CASH_PATH, bookingId, 471700L, "COD_CASH");
         assertEquals(List.of(expectedCall, expectedCall), CALLS);
     }
 
@@ -138,6 +139,47 @@ class BookingPaymentIntegrationTest {
         assertTrue(CALLS.isEmpty());
     }
 
+    @Test
+    void ownerStartsOnlinePaymentAtSavedPriceAndReceivesTheSameOrderOnRetry() throws Exception {
+        long bookingId = createBooking(true);
+        long expectedPaymentId = 10000L + bookingId;
+        String expectedOrderId = testOrderId(bookingId);
+
+        mockMvc.perform(post("/api/bookings/{id}/payment/online", bookingId)
+                        .with(jwt().jwt(token -> token.subject(OWNER)))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\": 1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paymentId").value(expectedPaymentId))
+                .andExpect(jsonPath("$.amount").value(471700))
+                .andExpect(jsonPath("$.currency").value("INR"))
+                .andExpect(jsonPath("$.paymentMethod").value("ONLINE"))
+                .andExpect(jsonPath("$.paymentStatus").value("PENDING"))
+                .andExpect(jsonPath("$.razorpayOrderId").value(expectedOrderId));
+
+        mockMvc.perform(post("/api/bookings/{id}/payment/online", bookingId)
+                        .with(jwt().jwt(token -> token.subject(OWNER))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paymentId").value(expectedPaymentId))
+                .andExpect(jsonPath("$.amount").value(471700))
+                .andExpect(jsonPath("$.paymentStatus").value("PENDING"))
+                .andExpect(jsonPath("$.razorpayOrderId").value(expectedOrderId));
+
+        PaymentCall expectedCall = new PaymentCall(ONLINE_PATH, bookingId, 471700L, "ONLINE");
+        assertEquals(List.of(expectedCall, expectedCall), CALLS);
+    }
+
+    @Test
+    void otherCustomerCannotStartOnlinePaymentForThisBooking() throws Exception {
+        long bookingId = createBooking(true);
+
+        mockMvc.perform(post("/api/bookings/{id}/payment/online", bookingId)
+                        .with(jwt().jwt(token -> token.subject(OTHER_CUSTOMER))))
+                .andExpect(status().isNotFound());
+
+        assertTrue(CALLS.isEmpty());
+    }
+
     private long createBooking(boolean withItems) throws Exception {
         long categoryId = categories.findAll().stream()
                 .filter(category -> "Home Cleaning".equals(category.getName()))
@@ -174,8 +216,15 @@ class BookingPaymentIntegrationTest {
         try {
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
 
-            server.createContext("/api/payments", exchange -> {
+            server.createContext(CASH_PATH, exchange -> {
                 try {
+                    String path = exchange.getRequestURI().getPath();
+                    boolean online = ONLINE_PATH.equals(path);
+                    if (!online && !CASH_PATH.equals(path)) {
+                        exchange.sendResponseHeaders(404, -1);
+                        return;
+                    }
+
                     if (!"POST".equals(exchange.getRequestMethod())) {
                         exchange.sendResponseHeaders(405, -1);
                         return;
@@ -192,19 +241,28 @@ class BookingPaymentIntegrationTest {
                     long amount = body.path("amount").asLong();
                     String method = body.path("paymentMethod").asText();
 
-                    CALLS.add(new PaymentCall(bookingId, amount, method));
+                    CALLS.add(new PaymentCall(path, bookingId, amount, method));
 
-                    byte[] response = STUB_JSON.writeValueAsBytes(Map.of(
-                            "paymentId", 10000L + bookingId,
-                            "bookingId", bookingId,
-                            "amount", amount,
-                            "currency", "INR",
-                            "paymentMethod", method,
-                            "paymentStatus", "PENDING"
-                    ));
+                    String expectedMethod = online ? "ONLINE" : "COD_CASH";
+                    if (!expectedMethod.equals(method)) {
+                        exchange.sendResponseHeaders(400, -1);
+                        return;
+                    }
 
+                    var reply = STUB_JSON.createObjectNode();
+                    reply.put("paymentId", 10000L + bookingId);
+                    reply.put("bookingId", bookingId);
+                    reply.put("amount", amount);
+                    reply.put("currency", "INR");
+                    reply.put("paymentMethod", method);
+                    reply.put("paymentStatus", "PENDING");
+                    if (online) {
+                        reply.put("razorpayOrderId", testOrderId(bookingId));
+                    }
+
+                    byte[] response = STUB_JSON.writeValueAsBytes(reply);
                     exchange.getResponseHeaders().set("Content-Type", "application/json");
-                    exchange.sendResponseHeaders(201, response.length);
+                    exchange.sendResponseHeaders(online ? 200 : 201, response.length);
                     exchange.getResponseBody().write(response);
                 } finally {
                     exchange.close();
@@ -218,5 +276,9 @@ class BookingPaymentIntegrationTest {
         }
     }
 
-    private record PaymentCall(long bookingId, long amount, String method) {}
+    private static String testOrderId(long bookingId) {
+        return "order_Test" + bookingId;
+    }
+
+    private record PaymentCall(String path, long bookingId, long amount, String method) {}
 }

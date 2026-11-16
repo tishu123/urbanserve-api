@@ -44,38 +44,12 @@ public class PaymentClient {
     }
 
     public PaymentDetails registerCashPayment(long bookingId, long amountPaise) {
-        if (token.isBlank() || token.length() < 32) {
-            throw new ResponseStatusException(
-                    HttpStatus.SERVICE_UNAVAILABLE, "Payment service is not configured");
-        }
-
-        PaymentDetails result;
-        try {
-            result = client.post()
-                    .uri("/api/payments")
-                    .headers(headers -> headers.setBearerAuth(token))
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(new CreatePayment(bookingId, amountPaise, "COD_CASH"))
-                    .retrieve()
-                    .body(PaymentDetails.class);
-        } catch (ResourceAccessException e) {
-            throw new ResponseStatusException(
-                    HttpStatus.SERVICE_UNAVAILABLE, "Payment service is unavailable");
-        } catch (RestClientResponseException e) {
-            if (e.getStatusCode().value() == 409) {
-                throw new ResponseStatusException(
-                        HttpStatus.CONFLICT, "This booking already has a different payment");
-            }
-            if (e.getStatusCode().value() == 503) {
-                throw new ResponseStatusException(
-                        HttpStatus.SERVICE_UNAVAILABLE, "Payment service is unavailable");
-            }
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_GATEWAY, "Payment service could not register the payment");
-        } catch (RestClientException e) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_GATEWAY, "Payment service returned an unreadable response");
-        }
+        PaymentDetails result = postPayment(
+                "/api/payments",
+                new CreatePayment(bookingId, amountPaise, "COD_CASH"),
+                PaymentDetails.class,
+                "This booking already has a different payment",
+                "Payment service could not register the payment");
 
         if (result == null || result.paymentId() == null
                 || !Objects.equals(result.bookingId(), bookingId)
@@ -83,11 +57,71 @@ public class PaymentClient {
                 || !"INR".equals(result.currency())
                 || !"COD_CASH".equals(result.paymentMethod())
                 || result.paymentStatus() == null) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_GATEWAY, "Payment service returned unexpected payment details");
+            throw unexpectedPaymentDetails();
         }
 
         return result;
+    }
+
+    public OnlinePaymentDetails prepareOnlinePayment(long bookingId, long amountPaise) {
+        OnlinePaymentDetails result = postPayment(
+                "/api/payments/razorpay/order",
+                new CreatePayment(bookingId, amountPaise, "ONLINE"),
+                OnlinePaymentDetails.class,
+                "This booking has a conflicting payment or its online order is not ready",
+                "Payment service could not prepare the online order");
+
+        if (result == null || result.paymentId() == null || result.paymentId() <= 0
+                || !Objects.equals(result.bookingId(), bookingId)
+                || !Objects.equals(result.amount(), amountPaise)
+                || !"INR".equals(result.currency())
+                || !"ONLINE".equals(result.paymentMethod())
+                || !"PENDING".equals(result.paymentStatus())
+                || result.razorpayOrderId() == null
+                || !result.razorpayOrderId().matches("order_[A-Za-z0-9]+")) {
+            throw unexpectedPaymentDetails();
+        }
+
+        return result;
+    }
+
+    private <T> T postPayment(
+            String path, CreatePayment request, Class<T> responseType,
+            String conflictMessage, String failureMessage) {
+        if (token.isBlank() || token.length() < 32) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Payment service is not configured");
+        }
+
+        try {
+            return client.post()
+                    .uri(path)
+                    .headers(headers -> headers.setBearerAuth(token))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(request)
+                    .retrieve()
+                    .body(responseType);
+        } catch (ResourceAccessException e) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Payment service is unavailable");
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 409) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, conflictMessage);
+            }
+            if (e.getStatusCode().value() == 503) {
+                throw new ResponseStatusException(
+                        HttpStatus.SERVICE_UNAVAILABLE, "Payment service is unavailable");
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, failureMessage);
+        } catch (RestClientException e) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY, "Payment service returned an unreadable response");
+        }
+    }
+
+    private ResponseStatusException unexpectedPaymentDetails() {
+        return new ResponseStatusException(
+                HttpStatus.BAD_GATEWAY, "Payment service returned unexpected payment details");
     }
 
     private record CreatePayment(long bookingId, long amount, String paymentMethod) {}
@@ -100,4 +134,14 @@ public class PaymentClient {
             String currency,
             String paymentMethod,
             String paymentStatus) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record OnlinePaymentDetails(
+            Long paymentId,
+            Long bookingId,
+            Long amount,
+            String currency,
+            String paymentMethod,
+            String paymentStatus,
+            String razorpayOrderId) {}
 }
