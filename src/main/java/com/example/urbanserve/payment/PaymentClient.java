@@ -106,6 +106,73 @@ public class PaymentClient {
 
         return result;
     }
+    public SavedPaymentStatus getPaymentStatus(long bookingId, Long savedAmountPaise) {
+        if (token.isBlank() || token.length() < 32) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Payment service is not configured");
+        }
+
+        SavedPaymentStatus result;
+        try {
+            result = client.get()
+                    .uri("/api/payments/bookings/{bookingId}/status", bookingId)
+                    .headers(headers -> headers.setBearerAuth(token))
+                    .retrieve()
+                    .body(SavedPaymentStatus.class);
+        } catch (ResourceAccessException e) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "Payment service is unavailable");
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 503) {
+                throw new ResponseStatusException(
+                        HttpStatus.SERVICE_UNAVAILABLE, "Payment service is unavailable");
+            }
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY, "Payment service could not return the status");
+        } catch (RestClientException e) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY, "Payment service returned an unreadable response");
+        }
+
+        if (result == null || !Objects.equals(result.bookingId(), bookingId)
+                || result.paymentStatus() == null) {
+            throw unexpectedPaymentDetails();
+        }
+
+        if ("NOT_STARTED".equals(result.paymentStatus())) {
+            if (result.amount() != null || result.currency() != null
+                    || result.paymentMethod() != null) {
+                throw unexpectedPaymentDetails();
+            }
+            return result;
+        }
+
+        boolean knownStatus = switch (result.paymentStatus()) {
+            case "PENDING", "AUTHORIZED", "PAID", "FAILED",
+                    "COLLECTION_PENDING", "REFUNDED" -> true;
+            default -> false;
+        };
+        boolean knownMethod = "ONLINE".equals(result.paymentMethod())
+                || "COD_CASH".equals(result.paymentMethod())
+                || "COD_UPI".equals(result.paymentMethod());
+
+        if (!knownStatus || !knownMethod || savedAmountPaise == null
+                || savedAmountPaise <= 0
+                || !Objects.equals(result.amount(), savedAmountPaise)
+                || !"INR".equals(result.currency())) {
+            throw unexpectedPaymentDetails();
+        }
+
+        return result;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SavedPaymentStatus(
+            Long bookingId,
+            Long amount,
+            String currency,
+            String paymentMethod,
+            String paymentStatus) {}
 
     private <T> T postPayment(
             String path, Object request, Class<T> responseType,

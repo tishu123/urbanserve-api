@@ -16,6 +16,11 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+
+
 
 @RestController
 @RequestMapping("/api/bookings")
@@ -81,6 +86,17 @@ public class BookingPaymentController {
                 requireSavedTotal(booking),
                 request.razorpayPaymentId(),
                 request.razorpaySignature());
+    }
+    @GetMapping("/{bookingId}/payment/status")
+    public ResponseEntity<PaymentClient.SavedPaymentStatus> getPaymentStatus(
+            @PathVariable Long bookingId,
+            @AuthenticationPrincipal Jwt jwt) {
+        Booking booking = requireOwnedBooking(bookingId, jwt);
+
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .body(paymentClient.getPaymentStatus(
+                        booking.getId(), booking.getTotalAmountPaise()));
     }
 
     private Booking requireOwnedBooking(Long bookingId, Jwt jwt) {
