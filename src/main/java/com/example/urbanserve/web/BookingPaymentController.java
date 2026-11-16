@@ -1,18 +1,21 @@
 package com.example.urbanserve.web;
 
+import com.example.urbanserve.model.Booking;
+import com.example.urbanserve.model.BookingStatus;
+import com.example.urbanserve.payment.PaymentClient;
+import com.example.urbanserve.repo.BookingRepository;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-
-import com.example.urbanserve.model.Booking;
-import com.example.urbanserve.model.BookingStatus;
-import com.example.urbanserve.payment.PaymentClient;
-import com.example.urbanserve.repo.BookingRepository;
 
 @RestController
 @RequestMapping("/api/bookings")
@@ -64,6 +67,22 @@ public class BookingPaymentController {
         return paymentClient.prepareOnlinePayment(booking.getId(), amountPaise);
     }
 
+    @PostMapping("/{bookingId}/payment/online/verify")
+    public PaymentClient.VerifiedOnlinePaymentDetails verifyOnlinePayment(
+            @PathVariable Long bookingId,
+            @AuthenticationPrincipal Jwt jwt,
+            @Valid @RequestBody VerifyOnlinePaymentRequest request) {
+        Booking booking = requireOwnedBooking(bookingId, jwt);
+
+        // A booking may be cancelled after checkout starts. Verification records
+        // what happened to the payment without reopening or dispatching the booking.
+        return paymentClient.verifyOnlinePayment(
+                booking.getId(),
+                requireSavedTotal(booking),
+                request.razorpayPaymentId(),
+                request.razorpaySignature());
+    }
+
     private Booking requireOwnedBooking(Long bookingId, Jwt jwt) {
         if (jwt == null || jwt.getSubject() == null || jwt.getSubject().isBlank()) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Sign in first");
@@ -83,4 +102,8 @@ public class BookingPaymentController {
         }
         return amountPaise;
     }
+
+    public record VerifyOnlinePaymentRequest(
+            @NotBlank @Pattern(regexp = "pay_[A-Za-z0-9]{1,100}") String razorpayPaymentId,
+            @NotBlank @Pattern(regexp = "[0-9a-fA-F]{64}") String razorpaySignature) {}
 }
